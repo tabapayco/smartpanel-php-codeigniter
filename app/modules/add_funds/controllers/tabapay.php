@@ -127,26 +127,55 @@ class tabapay extends MX_Controller
      */
     public function complete()
     {
-        if (!isset($_GET['token'])) {
+        if (empty($_GET['token']) || empty($_POST['token'])) {
             redirect(cn("add_funds/unsuccess"));
         }
 
-        $amount = $_GET['amount']/10;
-        $transaction = $this->model->get('*', $this->tb_transaction_logs, ['transaction_id' => $_GET['token'], 'status' => 0, 'amount' => $amount, 'type' => $this->payment_type]);
-        
-        if (!$transaction) {
-            redirect(cn("add_funds"));
-        }
-        
-        $uid = $transaction->uid;
-        if(empty(session("uid")))
-            set_session("uid",$uid);
+		if (!empty($_SERVER['HTTP_AUTHORIZE']) && md5($this->MerchantID) == $_SERVER['HTTP_AUTHORIZE']) {
+			$responseData = $_POST;
+			if ($responseData['status'] == "success" && $responseData['responseCode'] == 1) {
+				$tracking_code = $responseData['trackingCode'];
+				$amount = $responseData['amount']/10;
+				$token = $responseData['token'];
+				
+				$transaction = $this->model->get('*', $this->tb_transaction_logs, ['transaction_id' => $token, 'status' => 0, 'amount' => $amount, 'type' => $this->payment_type]);
 
-        if ($_GET['status'] == 'success' && $_GET['responseCode'] == 1) {
-            $responseData = $this->VerifyTransaction($_GET['token'], $_GET['amount']);
+                $data_tnx_log = array(
+                    "transaction_id" => $tracking_code,
+                    "status" => 1,
+                );
 
+                $this->db->update($this->tb_transaction_logs, $data_tnx_log, ['id' => $transaction->id]);
+
+                // Update Balance
+                require_once 'add_funds.php';
+                $add_funds = new add_funds();
+                $add_funds->add_funds_bonus_email($transaction, $this->payment_id);
+                echo (json_encode(['status' => 'success']));
+            }
+			
+		}elseif ($_GET['status'] == 'success' && $_GET['responseCode'] == 1) {
+			$amount = $_GET['amount']/10;
+			$transaction = $this->model->get('*', $this->tb_transaction_logs, ['transaction_id' => $_GET['token'], 'status' => 0, 'amount' => $amount, 'type' => $this->payment_type]);
+			
+			if (!$transaction) {
+				redirect(cn("add_funds"));
+			}
+			
+			$uid = $transaction->uid;
+			if(empty(session("uid")))
+				set_session("uid",$uid);
+		
+			$maxAttempts = 3;
+			$attempt = 0;
+			$responseData = null;
+			
+			while ($attempt < $maxAttempts && (empty($responseData['status']))) {
+				$responseData = $this->VerifyTransaction($_GET['token'], $_GET['amount']);
+				$attempt++;
+			}
+	
             if ($responseData['status'] == "success" && $responseData['responseCode'] == 1) {
-
                 $data_tnx_log = array(
                     "transaction_id" => $responseData['trackingCode'],
                     "status" => 1,
@@ -160,7 +189,6 @@ class tabapay extends MX_Controller
                 $add_funds->add_funds_bonus_email($transaction, $this->payment_id);
                 set_session("transaction_id", $transaction->id);
                 redirect(cn("add_funds/success"));
-
             } else {
                 //حالت دیباگ اینجا فعال بشه
                 if ($this->mode == "debug") {
